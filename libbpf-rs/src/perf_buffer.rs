@@ -10,13 +10,13 @@ fn is_power_two(i: usize) -> bool {
     i > 0 && (!(i & (i - 1))) > 0
 }
 
-struct CbStruct {
+struct CbStruct<F, G> {
     // Both sample_cb and lost_cb are owning pointers to Box's
-    sample_cb: *mut c_void,
-    lost_cb: *mut c_void,
+    sample_cb: *mut F,
+    lost_cb: *mut G,
 }
 
-impl Drop for CbStruct {
+impl<F, G> Drop for CbStruct<F, G> {
     fn drop(&mut self) {
         if !self.sample_cb.is_null() {
             let _ = unsafe { Box::from_raw(self.sample_cb) };
@@ -27,6 +27,15 @@ impl Drop for CbStruct {
         }
     }
 }
+
+/// We use this trait to erase the types from `CbStruct`. If we don't erase the type,
+/// then any user storing an instance of `PerfBuffer` needs to specify the type of
+/// their callbacks (which is impossible for closures as closures have an anonymous type).
+///
+/// Then in `PerfBuffer`, we store a `Box<dyn CbStruct>` (a wide pointer). The wide pointer
+/// contains the type information `Drop` needs to recreate the callback boxes.
+trait CbStructTypeErased {}
+impl<F, G> CbStructTypeErased for CbStruct<F, G> {}
 
 /// Builds [`PerfBuffer`] instances.
 pub struct PerfBufferBuilder<'a, F, G>
@@ -148,7 +157,7 @@ where
     }
 
     unsafe extern "C" fn call_sample_cb(ctx: *mut c_void, cpu: i32, data: *mut c_void, size: u32) {
-        let callback_struct = ctx as *mut CbStruct;
+        let callback_struct = ctx as *mut CbStruct<F, G>;
         let callback_ptr = (*callback_struct).sample_cb as *mut F;
         let callback = &mut *callback_ptr;
 
@@ -156,7 +165,7 @@ where
     }
 
     unsafe extern "C" fn call_lost_cb(ctx: *mut c_void, cpu: i32, count: u64) {
-        let callback_struct = ctx as *mut CbStruct;
+        let callback_struct = ctx as *mut CbStruct<F, G>;
         let callback_ptr = (*callback_struct).lost_cb as *mut G;
         let callback = &mut *callback_ptr;
 
@@ -169,7 +178,7 @@ where
 pub struct PerfBuffer {
     ptr: *mut libbpf_sys::perf_buffer,
     // Hold onto the box so it'll get dropped when PerfBuffer is dropped
-    _cb_struct: Box<CbStruct>,
+    _cb_struct: Box<dyn CbStructTypeErased>,
 }
 
 impl PerfBuffer {
